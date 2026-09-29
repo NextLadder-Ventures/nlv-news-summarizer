@@ -159,6 +159,10 @@ The bot will attempt to summarize any HTTP/HTTPS link that looks like a news art
 - Slack internal links
 - Giphy links
 
+### PDF links
+
+Direct links to PDFs (e.g. `arxiv.org/pdf/...`, `example.com/report.pdf`) are downloaded and their text is extracted with pypdf. PDFs are detected from the file's contents, not the URL, so links without a `.pdf` extension work too. Scanned (image-only) PDFs have no extractable text and will return an error.
+
 ### Google Drive support
 
 The bot has special handling for Google Drive and Google Docs links. Supported formats:
@@ -194,6 +198,7 @@ Not every site makes it easy to grab article text. The fetcher (`bot/article.py`
 |-------|-------------|-----------------|
 | **trafilatura (default)** | Downloads and extracts article text using its built-in fetcher | Works out of the box for most sites |
 | **Browser-like headers (fallback)** | Retries with a full set of headers (`User-Agent`, `Sec-Fetch-*`, `Accept`, etc.) mimicking a real Chrome browser | Added after sites like motor1.com returned 403 errors — they check for bot-like request headers |
+| **PDF detection** | If the download starts with `%PDF`, the raw bytes are parsed with pypdf instead of the HTML extractor | arXiv and other PDF links were being fed to trafilatura as HTML, which returned nothing |
 | **Skip patterns** | Ignores URLs that aren't articles (YouTube, Twitter/X, images, Slack links, Giphy) | Prevents unnecessary fetch attempts on non-article content |
 
 ### Known limitation: paywalled sites on cloud hosting
@@ -211,6 +216,15 @@ To fix this, you'd need to route requests through a residential proxy service su
    - **JavaScript-rendered sites**: Sites that load content via JavaScript won't work with any HTTP-based fetcher. These would require a headless browser (e.g., Playwright), which is a heavier dependency
 
 ## Changelog
+
+### Direct PDF link support & clearer failure messages
+**What changed:** The standard article fetcher now handles PDFs, `.pdf` links are no longer skipped, and the Slack error message now says *why* a link failed.
+
+**Why:** An arXiv link (`arxiv.org/pdf/...`) failed with "the site blocked access", but arXiv hadn't blocked anything — it returned the PDF fine. The bot passed the PDF bytes to trafilatura, an HTML extractor, which returned nothing, and every failure was reported with the same "blocked" message. Links ending in `.pdf` were also silently ignored by the skip patterns.
+
+**How it works:**
+- `fetch_article` (`bot/article.py`) checks whether the download starts with `%PDF`. If so, it refetches the raw bytes (trafilatura decodes to lossy text) and parses them with `extract_pdf`, shared with the Drive fetcher in `bot/gdrive.py`.
+- `fetch_article` raises `FetchError` with a user-facing reason instead of returning `None`: the site blocked access or didn't respond / the page had no readable article text / the PDF had no extractable text. `bot/app.py` includes that reason in the thread reply.
 
 ### Top-level-only summaries & duplicate-link dedup
 **What changed:** Two behavior changes to reduce noise:

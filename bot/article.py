@@ -7,6 +7,8 @@ from urllib.request import Request, urlopen
 
 import trafilatura
 
+from bot.gdrive import extract_pdf
+
 logger = logging.getLogger(__name__)
 
 USER_AGENT = (
@@ -36,7 +38,7 @@ SKIP_PATTERNS = [
     r"^https?://(www\.)?x\.com/",
     r"^https?://(.*\.)?slack\.com/",
     r"^https?://(.*\.)?giphy\.com/",
-    r"\.(png|jpg|jpeg|gif|mp4|mp3|pdf)(\?.*)?$",
+    r"\.(png|jpg|jpeg|gif|mp4|mp3)(\?.*)?$",
 ]
 
 
@@ -97,43 +99,65 @@ def extract_urls(text: str) -> list[str]:
     return _dedup([u for u in bare_urls if not should_skip(u)])
 
 
-def fetch_article(url: str) -> str | None:
+class FetchError(Exception):
+    """Raised when a URL can't be turned into text. The message is user-facing."""
+
+
+def _fetch_bytes(url: str) -> tuple[bytes, str]:
+    """Download raw bytes with browser-like headers. Returns (data, charset)."""
+    req = Request(url, headers=BROWSER_HEADERS)
+    with urlopen(req, timeout=15) as resp:
+        return resp.read(), resp.headers.get_content_charset() or "utf-8"
+
+
+def fetch_article(url: str) -> str:
     """Download and extract the main text content from a URL.
 
-    Returns the article text, or None if extraction fails.
+    Handles HTML articles and PDFs. Returns the text, or raises FetchError
+    with a user-facing reason.
     """
+    # First try trafilatura's built-in fetcher
     try:
-        # First try trafilatura's built-in fetcher
         downloaded = trafilatura.fetch_url(url)
+    except Exception:
+        logger.exception("trafilatura fetch failed: %s", url)
+        downloaded = None
 
-        # Fallback: fetch with full browser-like headers for sites that block bots
-        if not downloaded:
-            logger.info("Retrying with browser headers: %s", url)
-            try:
-                req = Request(url, headers=BROWSER_HEADERS)
-                with urlopen(req, timeout=15) as resp:
-                    downloaded = resp.read().decode(resp.headers.get_content_charset() or "utf-8")
-            except Exception:
-                logger.warning("Fallback fetch also failed: %s", url)
-                return None
+    # Refetch as raw bytes if trafilatura failed (sites that block bots) or
+    # returned a PDF (which it decodes to lossy text)
+    if not downloaded or downloaded.startswith("%PDF"):
+        logger.info("Fetching raw bytes with browser headers: %s", url)
+        try:
+            data, charset = _fetch_bytes(url)
+        except Exception:
+            logger.warning("Fallback fetch also failed: %s", url)
+            raise FetchError("the site blocked access or didn't respond")
 
-        if not downloaded:
-            logger.warning("Failed to download: %s", url)
-            return None
+        if data[:4] == b"%PDF":
+            logger.info("Detected PDF, extracting text: %s", url)
+            text = extract_pdf(data)
+            if not text:
+                raise FetchError("it's a PDF but no readable text could be extracted (it may be scanned images)")
+            return text
+        downloaded = data.decode(charset, errors="replace")
 
+    if not downloaded:
+        logger.warning("Failed to download: %s", url)
+        raise FetchError("the site blocked access or didn't respond")
+
+    try:
         text = trafilatura.extract(
             downloaded,
             include_comments=False,
             include_tables=False,
             favor_precision=True,
         )
-
-        if not text or len(text.strip()) < 100:
-            logger.warning("Extracted text too short from: %s", url)
-            return None
-
-        return text.strip()
-
     except Exception:
-        logger.exception("Error fetching article: %s", url)
-        return None
+        logger.exception("Error extracting article: %s", url)
+        text = None
+
+    if not text or len(text.strip()) < 100:
+        logger.warning("Extracted text too short from: %s", url)
+        raise FetchError("the page loaded but didn't contain readable article text (it may be paywalled or JavaScript-rendered)")
+
+    return text.strip()

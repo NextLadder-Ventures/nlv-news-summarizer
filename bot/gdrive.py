@@ -58,7 +58,7 @@ def _fetch_bytes(url: str) -> bytes | None:
         return None
 
 
-def _extract_pdf(data: bytes) -> str | None:
+def extract_pdf(data: bytes) -> str | None:
     """Extract text from PDF bytes using pypdf."""
     try:
         import pypdf
@@ -134,7 +134,7 @@ def fetch_drive_file(url: str) -> str | None:
     # Detect file type from first bytes
     if data[:4] == b"%PDF":
         logger.info("Detected PDF, extracting text")
-        return _extract_pdf(data)
+        return extract_pdf(data)
 
     if data[:2] == b"PK":  # ZIP-based: .docx, .pptx, .xlsx
         logger.info("Detected ZIP-based Office file, trying DOCX extraction")

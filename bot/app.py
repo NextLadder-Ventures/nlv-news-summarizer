@@ -6,7 +6,7 @@ import re
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
-from bot.article import extract_urls, fetch_article
+from bot.article import FetchError, extract_urls, fetch_article
 from bot.config import SLACK_APP_TOKEN, SLACK_BOT_TOKEN
 from bot.gdrive import fetch_drive_file, is_drive_url
 from bot.summarizer import summarize
@@ -62,11 +62,12 @@ def handle_message(event, say):
                 )
                 continue
         else:
-            article_text = fetch_article(url)
-            if not article_text:
-                logger.info("Could not extract article from: %s", url)
+            try:
+                article_text = fetch_article(url)
+            except FetchError as e:
+                logger.info("Could not extract article from %s: %s", url, e)
                 say(
-                    text=f"_Couldn't summarize this link — the site blocked access or didn't return readable article content._\n{url}",
+                    text=f"_Couldn't summarize this link — {e}._\n{url}",
                     channel=channel,
                     thread_ts=thread_ts,
                 )
